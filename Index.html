@@ -1,0 +1,229 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Analyseur de Matchs iPhone</title>
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Analyseur Matchs">
+<link rel="apple-touch-icon" href="icon.png">
+<style>
+:root{
+  --bg:#0f1720; --card:#11161b; --muted:#9fb9b0; --accent:#76bfb8; --danger:#ef535f;
+  --glass: rgba(255,255,255,0.03);
+  --text:#e6eef1;
+}
+body{font-family:Inter, system-ui, Arial; background:linear-gradient(180deg,var(--bg),#061019); color:var(--text); margin:0; padding:20px;}
+.container{max-width:980px;margin:0 auto;}
+header{display:flex;align-items:center;justify-content:space-between;margin-bottom:18px}
+h1{font-size:18px;margin:0}
+.card{background:linear-gradient(180deg, rgba(255,255,255,0.02), rgba(255,255,255,0.01)); border-radius:12px; padding:16px; box-shadow: 0 6px 18px rgba(0,0,0,0.6); margin-bottom:14px; border:1px solid rgba(255,255,255,0.03)}
+textarea{width:100%;height:120px;background:transparent;border:1px dashed rgba(255,255,255,0.05); color:var(--text); padding:12px;border-radius:8px; resize:vertical}
+label{display:block;margin-bottom:8px;color:var(--muted);font-size:13px}
+.row{display:flex;gap:10px;flex-wrap:wrap;margin-top:10px;}
+button{background:linear-gradient(90deg,var(--accent), #9fb9b0); border:none;padding:10px 14px;border-radius:9px;color:#071; cursor:pointer;font-weight:600}
+button.secondary{background:transparent;border:1px solid rgba(255,255,255,0.04); color:var(--muted)}
+.matches-list{margin-top:12px}
+.match-item{display:flex;align-items:center;justify-content:space-between;padding:10px;border-radius:10px;background:var(--glass);margin-bottom:8px; flex-wrap:wrap}
+.small{font-size:13px;color:var(--muted)}
+.result{margin-top:12px;padding:12px;border-radius:10px;background:linear-gradient(180deg, rgba(118,191,184,0.06), rgba(255,255,255,0.01))}
+.stat{display:flex;gap:10px;flex-wrap:wrap}
+.pill{padding:6px 8px;border-radius:999px;background:rgba(255,255,255,0.03);font-weight:600}
+.hint{font-size:13px;color:var(--muted); margin-top:8px}
+.danger{color:var(--danger);font-weight:700}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+@media(max-width:720px){.row{flex-direction:column}.grid{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+<div class="container">
+  <header>
+    <h1>Analyseur Matchs iPhone</h1>
+    <div class="small">Statistiques publiques (OpenLigaDB)</div>
+  </header>
+
+  <div class="card">
+    <label>1) Sélectionnez le championnat :</label>
+    <select id="leagueSelect">
+      <option value="bl1">Allemagne (Bundesliga)</option>
+      <option value="pl">Angleterre (Premier League)</option>
+      <option value="fr">France (Ligue 1)</option>
+      <option value="it">Italie (Serie A)</option>
+      <option value="es">Espagne (La Liga)</option>
+    </select>
+
+    <label>2) Choisir une date :</label>
+    <input type="date" id="filterDate">
+
+    <label>3) Liste de matchs (facultatif, 1 par ligne)</label>
+    <textarea id="matchesInput" placeholder="Ex: Barcelona - Real Madrid | 2025-09-22"></textarea>
+
+    <div class="row">
+      <button id="analyzeBtn">Analyser</button>
+      <button id="clearBtn" class="secondary">Effacer</button>
+      <button id="loadBtn" class="secondary">Charger Bundesliga 2025</button>
+    </div>
+    <div class="hint">L'API publique OpenLigaDB fonctionne seulement pour Bundesliga. Pour les autres championnats, collez les matchs.</div>
+  </div>
+
+  <div id="matchesContainer"></div>
+
+  <div id="results" class="card" style="display:none">
+    <h3>Résultats & indicateurs</h3>
+    <div id="resultsList"></div>
+    <div style="margin-top:10px">
+      <button id="exportCsv" class="secondary">Exporter CSV</button>
+    </div>
+  </div>
+</div>
+
+<script>
+// --- Fonctions utilitaires ---
+function parseMatches(text){
+  const lines = text.split('\n').map(l=>l.trim()).filter(Boolean);
+  return lines.map(line=>{
+    let [teams,date]=line.split('|').map(s=>s?s.trim():'');
+    date=date||'';
+    const parts=teams.split('-').map(s=>s.trim());
+    const home=parts[0]||'';
+    const away=parts.slice(1).join('-')||'';
+    return {raw:line,home,away,date};
+  });
+}
+
+function createElem(tag,props={},...children){
+  const el=document.createElement(tag);
+  for(const k in props){
+    if(k==='class') el.className=props[k];
+    else if(k==='html') el.innerHTML=props[k];
+    else el.setAttribute(k,props[k]);
+  }
+  children.forEach(c=>{ if(typeof c==='string') el.appendChild(document.createTextNode(c)); else el.appendChild(c); });
+  return el;
+}
+
+// --- Heuristique ---
+function heuristicAnalysis(m){
+  const homeScoreExp=1.3, awayScoreExp=1.1;
+  const bttsProb=Math.min(95, Math.round(Math.min(100,(Math.min(homeScoreExp,awayScoreExp)/1.2)*100)));
+  const over25Prob=Math.min(95, Math.round(Math.min(100,((homeScoreExp+awayScoreExp)/2)*60)));
+  let suggestion="Match équilibré";
+  if(homeScoreExp-awayScoreExp>0.45)suggestion="Favori: "+m.home;
+  else if(homeScoreExp-awayScoreExp<-0.45)suggestion="Favori: "+m.away;
+  return {homeScoreExp:homeScoreExp.toFixed(2),awayScoreExp:awayScoreExp.toFixed(2),bttsProb,over25Prob,suggestion};
+}
+
+// --- DOM & logique ---
+const matchesInput=document.getElementById('matchesInput');
+const analyzeBtn=document.getElementById('analyzeBtn');
+const matchesContainer=document.getElementById('matchesContainer');
+const results=document.getElementById('results');
+const resultsList=document.getElementById('resultsList');
+const clearBtn=document.getElementById('clearBtn');
+const loadBtn=document.getElementById('loadBtn');
+const leagueSelect=document.getElementById('leagueSelect');
+const filterDateInput=document.getElementById('filterDate');
+const exportCsvBtn=document.getElementById('exportCsv');
+let currentMatches=[];
+
+// --- Analyse automatique pour iPhone ---
+analyzeBtn.addEventListener('click',()=>{
+  const text = matchesInput.value.trim();
+  if(!text){ alert("Colle tes matchs."); return; }
+  let parsed = parseMatches(text);
+  const dateFilter = filterDateInput.value;
+  if(dateFilter) parsed = parsed.filter(m => m.date.startsWith(dateFilter));
+  currentMatches = parsed;
+
+  // Analyse automatique
+  currentMatches.forEach(m => m.analysis = heuristicAnalysis(m));
+  renderMatchInputs(parsed); 
+  updateResults(); // affiche directement les résultats
+});
+
+// Effacer
+clearBtn.addEventListener('click',()=>{
+  matchesInput.value=''; matchesContainer.innerHTML=''; results.style.display='none';
+});
+
+// Charger Bundesliga
+loadBtn.addEventListener('click',async()=>{
+  const league=leagueSelect.value;
+  if(league!=='bl1'){ alert("API publique supporte seulement Bundesliga."); return;}
+  const url='https://api.openligadb.de/getmatchdata/bl1/2025';
+  try{
+    const res=await fetch(url);
+    const data=await res.json();
+    let matches=data.map(m=>({home:m.Team1.TeamName,away:m.Team2.TeamName,date:m.MatchDateTime}));
+    const dateFilter=filterDateInput.value;
+    if(dateFilter) matches=matches.filter(m=>m.date.startsWith(dateFilter));
+    matchesInput.value=matches.map(m=>`${m.home} - ${m.away} | ${m.date}`).join("\n");
+    analyzeBtn.click();
+  }catch(e){ alert("Erreur lors du chargement OpenLigaDB"); console.error(e);}
+});
+
+// --- Affichage ---
+function renderMatchInputs(matches){
+  matchesContainer.innerHTML='';
+  matches.forEach(m=>{
+    const box=createElem('div',{class:'card'});
+    const title=createElem('div',{class:'match-item'});
+    const left=createElem('div',null, createElem('div',{html:`<strong>${m.home}</strong> — ${m.away}`}), createElem('div',{class:'small'},m.date||''));
+    title.appendChild(left);
+    box.appendChild(title);
+
+    if(m.analysis){
+      const out=createElem('div',{class:'result'});
+      out.innerHTML=`
+        <div style="display:flex;justify-content:space-between;align-items:center">
+          <div><strong>${m.home} — ${m.away}</strong></div>
+          <div class="pill small">${m.analysis.suggestion}</div>
+        </div>
+        <div class="stat" style="margin-top:8px">
+          <div class="pill">Exp buts ${m.home}: ${m.analysis.homeScoreExp}</div>
+          <div class="pill">Exp buts ${m.away}: ${m.analysis.awayScoreExp}</div>
+          <div class="pill">Prob. BTTS: ${m.analysis.bttsProb}%</div>
+          <div class="pill">Prob. Over 2.5: ${m.analysis.over25Prob}%</div>
+        </div>
+      `;
+      box.appendChild(out);
+    }
+
+    matchesContainer.appendChild(box);
+  });
+}
+
+// --- Synthèse ---
+function updateResults(){
+  resultsList.innerHTML='';
+  const rows=[];
+  currentMatches.forEach(m=>{
+    if(!m.analysis) return;
+    const line=createElem('div',{class:'match-item'});
+    line.innerHTML=`<div><strong>${m.home}</strong> — ${m.away} <div class="small">${m.date||''}</div></div>
+      <div style="text-align:right">
+        <div class="pill">${m.analysis.suggestion}</div>
+        <div class="small" style="margin-top:6px">BTTS ${m.analysis.bttsProb}% • Over2.5 ${m.analysis.over25Prob}%</div>
+      </div>`;
+    resultsList.appendChild(line);
+    rows.push({match:`${m.home} - ${m.away}`,date:m.date||'',suggestion:m.analysis.suggestion,homeExp:m.analysis.homeScoreExp,awayExp:m.analysis.awayScoreExp,btts:m.analysis.bttsProb,over25:m.analysis.over25Prob});
+  });
+  results.style.display=rows.length?'block':'none';
+  results._rows=rows;
+}
+
+// --- Export CSV ---
+exportCsvBtn.addEventListener('click',()=>{
+  const rows=results._rows||[];
+  if(!rows.length){ alert("Aucune donnée à exporter."); return;}
+  const headers=Object.keys(rows[0]);
+  const csv=[headers.join(',')].concat(rows.map(r=> headers.map(h=> `"${(''+r[h]).replace(/"/g,'""')}"`).join(','))).join('\n');
+  const blob=new Blob([csv],{type:'text/csv;charset=utf-8;'});
+  const url=URL.createObjectURL(blob);
+  const a=document.createElement('a'); a.href=url; a.download='analysis.csv'; a.click();
+  URL.revokeObjectURL(url);
+});
+</script>
+</body>
+</html>
