@@ -1,0 +1,134 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Football Predictions vs Results</title>
+<style>
+body{font-family:Arial;background:#f4f4f4;padding:20px;}
+table{border-collapse:collapse;width:100%;background:#fff;margin-top:20px;}
+th,td{padding:10px;border:1px solid #ddd;text-align:center;}
+th{background:#333;color:#fff;}
+.correct{background:#c6efce;} 
+.wrong{background:#ffc7ce;}   
+.high{background:#cfe2f3;}    
+.mostlikely-correct{background:#a8d08d;} 
+.mostlikely-wrong{background:#bfbfbf;}   
+</style>
+</head>
+<body>
+
+<h2>Football Predictions vs Results</h2>
+
+<label>Select Date:</label>
+<input type="date" id="matchDate" value="">
+<button onclick="loadData()">Show</button>
+
+<table id="matchesTable">
+<thead>
+<tr>
+<th>League</th>
+<th>Home Team</th>
+<th>Away Team</th>
+<th>Predicted</th>
+<th>Actual</th>
+<th>Most Likely</th>
+</tr>
+</thead>
+<tbody></tbody>
+</table>
+
+<script>
+const API_KEY = "e76dbfc38ac073a94fe3def48f2e1e6c7d1b0649493d4529811706e50be5e6ba";
+const leagues = [
+  {name:"Premier League", id:152},
+  {name:"La Liga", id:302},
+  {name:"Bundesliga", id:175},
+  {name:"Ligue 1", id:168}
+];
+
+document.getElementById('matchDate').value = new Date().toISOString().split('T')[0];
+
+function safe(obj, key, def="N/A"){ return obj && obj[key] !== undefined ? obj[key] : def; }
+
+function estimateBTTS(pred){
+    const hw = safe(pred,'prob_HW',0);
+    const aw = safe(pred,'prob_AW',0);
+    const d  = safe(pred,'prob_D',0);
+    const btts_pct = Math.min(95, Math.max(5, Math.round(0.5*hw + 0.5*aw + 0.2*(100-d))));
+    return {btts: btts_pct >= 50 ? "BTTS Yes" : "BTTS No", btts_pct};
+}
+
+function predicted(pred){
+    if(!pred) return {result:"N/A",result_pct:0,overunder:"N/A",over_pct:0,btts:"N/A",btts_pct:0};
+    const hw = safe(pred,'prob_HW',0);
+    const aw = safe(pred,'prob_AW',0);
+    const d  = safe(pred,'prob_D',0);
+    const max = Math.max(hw,aw,d);
+    const result = max===hw ? "Home Win" : max===aw ? "Away Win" : "Draw";
+    const over_pct = Math.round((hw+aw)/2);
+    const overunder = over_pct>=50 ? "Over 2.5" : "Under 2.5";
+    const btts_info = estimateBTTS(pred);
+    return {...btts_info, result, result_pct:max, overunder, over_pct};
+}
+
+function actual(match){
+    const h = parseInt(safe(match,'match_hometeam_score',-1));
+    const a = parseInt(safe(match,'match_awayteam_score',-1));
+    if(h<0 || a<0) return {result:"N/A", overunder:"N/A", btts:"N/A"};
+    const result = h>a ? "Home Win" : a>h ? "Away Win" : "Draw";
+    const overunder = (h+a)>2.5 ? "Over 2.5" : "Under 2.5";
+    const btts = (h>0 && a>0) ? "BTTS Yes" : "BTTS No";
+    return {result, overunder, btts};
+}
+
+async function fetchJSON(url){
+    try{
+        const res = await fetch(url);
+        return await res.json();
+    }catch(e){ return []; }
+}
+
+async function loadData(){
+    const date = document.getElementById('matchDate').value;
+    const tbody = document.querySelector("#matchesTable tbody");
+    tbody.innerHTML = "";
+    
+    for(const league of leagues){
+        const eventsUrl = `https://apiv3.apifootball.com/?action=get_events&from=${date}&to=${date}&league_id=${league.id}&APIkey=${API_KEY}`;
+        const predUrl   = `https://apiv3.apifootball.com/?action=get_predictions&from=${date}&to=${date}&league_id=${league.id}&APIkey=${API_KEY}`;
+        
+        const [events, predictions] = await Promise.all([fetchJSON(eventsUrl), fetchJSON(predUrl)]);
+        const predMap = {};
+        predictions.forEach(p => { if(p.match_id) predMap[p.match_id] = p; });
+        
+        for(const m of events){
+            const mid = m.match_id;
+            const pred = predMap[mid] || null;
+            const pred_info = predicted(pred);
+            const act_info = actual(m);
+
+            // Most likely
+            const candidates = [
+                {label:pred_info.result, pct:pred_info.result_pct, actual:act_info.result},
+                {label:pred_info.overunder, pct:pred_info.over_pct, actual:act_info.overunder},
+                {label:pred_info.btts, pct:pred_info.btts_pct, actual:act_info.btts}
+            ];
+            candidates.sort((a,b)=>b.pct-a.pct);
+            const most = candidates[0];
+            const ml_class = most.label===most.actual ? "mostlikely-correct" : "mostlikely-wrong";
+
+            tbody.innerHTML += `<tr>
+                <td>${league.name}</td>
+                <td>${safe(m,'match_hometeam_name')}</td>
+                <td>${safe(m,'match_awayteam_name')}</td>
+                <td>${pred_info.result} ${pred_info.result_pct}% | ${pred_info.overunder} ${pred_info.over_pct}% | ${pred_info.btts} ${pred_info.btts_pct}%</td>
+                <td>${act_info.result} | ${act_info.overunder} | ${act_info.btts}</td>
+                <td class="${ml_class}">${most.label} (${most.pct}%)</td>
+            </tr>`;
+        }
+    }
+}
+</script>
+
+</body>
+</html>
